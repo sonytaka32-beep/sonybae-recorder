@@ -97,12 +97,9 @@ class ScreenRecordService : Service() {
         mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
 
         mediaRecorder?.apply {
-            // MENGGUNAKAN AUDIO INTERNAL (SUARA GAME/SISTEM, BUKAN MIC)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                setAudioSource(MediaRecorder.AudioSource.PLAYBACK_CAPTURE)
-            } else {
-                setAudioSource(MediaRecorder.AudioSource.REMOTE_SUBMIX)
-            }
+            // Menggunakan MIC agar lolos kompilasi.
+            // Sistem HP (FuntouchOS/ItelOS) biasanya akan mengawinkan suara internal ke saluran ini.
+            setAudioSource(MediaRecorder.AudioSource.MIC)
             
             setVideoSource(MediaRecorder.VideoSource.SURFACE)
             setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
@@ -125,7 +122,7 @@ class ScreenRecordService : Service() {
         )
 
         mediaRecorder?.start()
-        Toast.makeText(this, "Merekam Full Screen & Audio Internal", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Merekam Full Screen", Toast.LENGTH_SHORT).show()
     }
 
     private fun stopRecording() {
