@@ -1,10 +1,10 @@
 name: Generate Gradle Wrapper
 
 on:
-  workflow_dispatch: # Mengizinkan eksekusi manual
+  workflow_dispatch:
 
 permissions:
-  contents: write # Memberikan izin pada GitHub untuk menyimpan file ke repo
+  contents: write
 
 jobs:
   create-wrapper:
@@ -19,16 +19,21 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Generate Gradle Wrapper
+      - name: Generate Gradle Wrapper (isolated)
         run: |
-          mkdir temp_wrapper
-          cd temp_wrapper
+          # Create wrapper in /tmp to avoid project config conflicts
+          mkdir -p /tmp/wrapper_gen
+          cd /tmp/wrapper_gen
           gradle wrapper --gradle-version 8.4
-          cd ..
-          mv temp_wrapper/gradlew .
-          mv temp_wrapper/gradlew.bat .
-          mv temp_wrapper/gradle/ .
-          rm -rf temp_wrapper
+          
+          # Copy generated files to repo
+          cp gradlew $GITHUB_WORKSPACE/
+          cp gradlew.bat $GITHUB_WORKSPACE/
+          cp -r gradle $GITHUB_WORKSPACE/
+          
+          # Cleanup
+          cd $GITHUB_WORKSPACE
+          rm -rf /tmp/wrapper_gen
 
       - name: Commit and Push Wrapper Files
         run: |
