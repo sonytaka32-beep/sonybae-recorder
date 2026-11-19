@@ -21,9 +21,14 @@ jobs:
 
       - name: Generate Gradle Wrapper (isolated)
         run: |
-          # Create wrapper in /tmp to avoid project config conflicts
+          # Create wrapper in /tmp with minimal Gradle project
           mkdir -p /tmp/wrapper_gen
           cd /tmp/wrapper_gen
+          
+          # Create minimal settings.gradle for wrapper generation
+          echo 'rootProject.name = "temp"' > settings.gradle
+          
+          # Generate wrapper
           gradle wrapper --gradle-version 8.4
           
           # Copy generated files to repo
