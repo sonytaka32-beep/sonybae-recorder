@@ -20,7 +20,15 @@ jobs:
           distribution: 'temurin'
 
       - name: Generate Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.4
+        run: |
+          mkdir temp_wrapper
+          cd temp_wrapper
+          gradle wrapper --gradle-version 8.4
+          cd ..
+          mv temp_wrapper/gradlew .
+          mv temp_wrapper/gradlew.bat .
+          mv temp_wrapper/gradle/ .
+          rm -rf temp_wrapper
 
       - name: Commit and Push Wrapper Files
         run: |
