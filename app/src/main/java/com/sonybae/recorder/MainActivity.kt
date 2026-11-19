@@ -11,6 +11,8 @@ import android.os.Bundle
 import android.provider.Settings
 import android.widget.Button
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 
 class MainActivity : AppCompatActivity() {
 
@@ -19,12 +21,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Memanggil desain premium dari XML
+        setContentView(R.layout.activity_main)
         
-        val btnStart = Button(this).apply {
-            text = "MULAI REKAM (SONYBAE HD)"
-            setOnClickListener { checkPermissionsAndStart() }
+        findViewById<Button>(R.id.btnStartRecord).setOnClickListener { 
+            checkPermissionsAndStart() 
         }
-        setContentView(btnStart)
     }
 
     private fun checkPermissionsAndStart() {
@@ -34,8 +36,13 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS), 1003)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                arrayOf(Manifest.permission.RECORD_AUDIO)
+            }
+            ActivityCompat.requestPermissions(this, permissions, 1003)
             return
         }
 
@@ -59,7 +66,8 @@ class MainActivity : AppCompatActivity() {
             } else {
                 startService(serviceIntent)
             }
-            finish() // Tutup activity agar layar bersih sebelum merekam
+            // Menutup aplikasi agar layar bersih saat perekaman dimulai
+            moveTaskToBack(true) 
         }
     }
 }
