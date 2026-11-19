@@ -821,8 +821,8 @@ class ScreenRecordService : Service() {
         )
 
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("Merekam layar + audio internal")
-            .setContentText("Tidak ada mikrofon. Ketuk STOP untuk menyimpan.")
+            .setContentTitle("SONYBAE RECORDER · MEREKAM")
+            .setContentText("Audio internal saja. Ketuk STOP untuk menyimpan.")
             .setSmallIcon(R.drawable.ic_stat_record)
             .setWhen(System.currentTimeMillis())
             .setUsesChronometer(true)

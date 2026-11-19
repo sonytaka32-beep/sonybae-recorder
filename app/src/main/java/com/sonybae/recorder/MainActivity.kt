@@ -44,16 +44,16 @@ class MainActivity : AppCompatActivity() {
         findViewById<Spinner>(R.id.spinnerResolution).apply {
             adapter = ArrayAdapter(
                 this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
+                R.layout.spinner_item,
                 arrayOf("Full Screen (Native)", "Setengah Resolusi (Hemat)")
-            )
+            ).also { it.setDropDownViewResource(R.layout.spinner_dropdown_item) }
             setSelection(0)
         }
 
         findViewById<Spinner>(R.id.spinnerBitrate).apply {
             adapter = ArrayAdapter(
                 this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
+                R.layout.spinner_item,
                 arrayOf(
                     "24 Mbps (Ultra)",
                     "20 Mbps (Sangat Jernih)",
@@ -61,16 +61,16 @@ class MainActivity : AppCompatActivity() {
                     "10 Mbps",
                     "5 Mbps"
                 )
-            )
+            ).also { it.setDropDownViewResource(R.layout.spinner_dropdown_item) }
             setSelection(1)
         }
 
         findViewById<Spinner>(R.id.spinnerFps).apply {
             adapter = ArrayAdapter(
                 this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
+                R.layout.spinner_item,
                 arrayOf("60 FPS (Mulus)", "30 FPS (Hemat)")
-            )
+            ).also { it.setDropDownViewResource(R.layout.spinner_dropdown_item) }
             setSelection(1)
         }
     }
@@ -142,7 +142,7 @@ class MainActivity : AppCompatActivity() {
             } else {
                 Toast.makeText(
                     this,
-                    "Izin mikrofon wajib untuk menangkap audio internal.",
+                    "Android meminta izin audio untuk menangkap suara internal; audio mikrofon tidak direkam.",
                     Toast.LENGTH_LONG
                 ).show()
             }
