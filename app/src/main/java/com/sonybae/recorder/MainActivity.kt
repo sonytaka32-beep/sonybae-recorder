@@ -7,22 +7,31 @@ import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.Spinner
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.hbisoft.hbrecorder.HBRecorder
+import com.hbisoft.hbrecorder.HBRecorderListener
+import java.io.File
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), HBRecorderListener {
 
     private val REQUEST_CODE_SCREEN_CAPTURE = 1001
     private var selectedBitrate = 20000000
+    private lateinit var hbRecorder: HBRecorder
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        
+
+        // Inisialisasi Mesin HBRecorder
+        hbRecorder = HBRecorder(this, this)
+
         setupSpinners()
 
         findViewById<Button>(R.id.btnStartRecord).setOnClickListener { 
@@ -35,15 +44,13 @@ class MainActivity : AppCompatActivity() {
         val resSpinner = findViewById<Spinner>(R.id.spinnerResolution)
         val bitSpinner = findViewById<Spinner>(R.id.spinnerBitrate)
 
-        // Resolusi dipaksa mengikuti layar (Full Screen)
         val resOptions = arrayOf("Full Screen (Otomatis)")
-        val resAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, resOptions)
-        resSpinner.adapter = resAdapter
+        resSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, resOptions)
 
         val bitOptions = arrayOf("24 Mbps (Ultra HD)", "20 Mbps (Sangat Jernih)", "15 Mbps (Standar)")
         val bitAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, bitOptions)
         bitSpinner.adapter = bitAdapter
-        bitSpinner.setSelection(1) // 20 Mbps default
+        bitSpinner.setSelection(1) // Default ke 20 Mbps
     }
 
     private fun saveSettings() {
@@ -56,15 +63,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkPermissionsAndStart() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
-            } else {
-                arrayOf(Manifest.permission.RECORD_AUDIO)
+        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        
+        var allGranted = true
+        for (p in permissions) {
+            if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
+                allGranted = false
+                break
             }
-            ActivityCompat.requestPermissions(this, permissions, 1003)
+        }
+
+        if (!allGranted) {
+            ActivityCompat.requestPermissions(this, permissions.toTypedArray(), 1003)
             return
         }
+
         startProjection()
     }
 
@@ -75,19 +91,45 @@ class MainActivity : AppCompatActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_CODE_SCREEN_CAPTURE && resultCode == RESULT_OK) {
-            val serviceIntent = Intent(this, ScreenRecordService::class.java).apply {
-                putExtra("RESULT_CODE", resultCode)
-                putExtra("DATA", data)
-                putExtra("BITRATE", selectedBitrate)
-                action = "START" // Penanda untuk memulai Service
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
-            moveTaskToBack(true) 
+        if (requestCode == REQUEST_CODE_SCREEN_CAPTURE && resultCode == RESULT_OK && data != null) {
+            
+            // PENGATURAN KUALITAS VIDEO
+            hbRecorder.setVideoBitrate(selectedBitrate)
+            hbRecorder.setVideoEncoder("H264")
+            hbRecorder.recordHDVideo(true) // Paksa otomatis ikut resolusi hardware Itel P55 5G
+            
+            // PENGATURAN INTERNAL AUDIO (KHUSUS ANDROID 10+)
+            hbRecorder.isAudioEnabled(true)
+            hbRecorder.recordInternalAudio(true) 
+            
+            // LOKASI PENYIMPANAN KE GALERI
+            val folder = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "SONYBAE")
+            if (!folder.exists()) folder.mkdirs()
+            hbRecorder.setOutputPath(folder.absolutePath)
+            
+            // KONTROL VIA NOTIFIKASI
+            hbRecorder.setNotificationTitle("SONYBAE Merekam")
+            hbRecorder.setNotificationDescription("Layar dan Audio Internal sedang direkam")
+
+            // EKSEKUSI PEREKAMAN
+            hbRecorder.startScreenRecording(data, resultCode)
+            
+            Toast.makeText(this, "Perekaman Dimulai! Tarik panel atas untuk Pause/Stop.", Toast.LENGTH_LONG).show()
+            moveTaskToBack(true) // Tutup activity agar layar bersih
         }
     }
+
+    // --- LISTENER WAJIB DARI HBRECORDER ---
+    override fun HBRecorderOnStart() {}
+    
+    override fun HBRecorderOnComplete() {
+        Toast.makeText(this, "Video Tersimpan di Galeri (Movies/SONYBAE)", Toast.LENGTH_LONG).show()
+    }
+    
+    override fun HBRecorderOnError(errorCode: Int, reason: String?) {
+        Toast.makeText(this, "Gagal merekam: $reason", Toast.LENGTH_LONG).show()
+    }
+    
+    override fun HBRecorderOnPause() {}
+    override fun HBRecorderOnResume() {}
 }
