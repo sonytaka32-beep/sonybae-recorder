@@ -34,12 +34,19 @@ class ScreenRecordService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var floatingView: View
     private var isPaused = false
+    
+    private var targetResolution = 720
+    private var targetBitrate = 15000000
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val resultCode = intent?.getIntExtra("RESULT_CODE", Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED
         val data = intent?.getParcelableExtra<Intent>("DATA")
+        
+        // Ambil pengaturan manual dari MainActivity
+        targetResolution = intent?.getIntExtra("RESOLUTION", 720) ?: 720
+        targetBitrate = intent?.getIntExtra("BITRATE", 15000000) ?: 15000000
 
         if (resultCode == Activity.RESULT_OK && data != null) {
             startForeground(1, createNotification())
@@ -93,12 +100,25 @@ class ScreenRecordService : Service() {
 
     private fun startRecording() {
         val metrics = resources.displayMetrics
-        // Pembulatan resolusi ke genap menyesuaikan resolusi asli layar
-        val width = metrics.widthPixels.let { if (it % 2 != 0) it - 1 else it }
-        val height = metrics.heightPixels.let { if (it % 2 != 0) it - 1 else it }
+        val screenWidth = metrics.widthPixels
+        val screenHeight = metrics.heightPixels
         val density = metrics.densityDpi
 
-        // Logika injeksi langsung ke Galeri (MediaStore)
+        // Kalkulasi resolusi proporsional sesuai rasio layar HP
+        val shortSide = Math.min(screenWidth, screenHeight)
+        val longSide = Math.max(screenWidth, screenHeight)
+        val scale = targetResolution.toFloat() / shortSide.toFloat()
+        
+        var videoShort = targetResolution
+        var videoLong = (longSide * scale).toInt()
+
+        // WAJIB: Resolusi video Android harus genap, jika ganjil codec akan error
+        if (videoShort % 2 != 0) videoShort--
+        if (videoLong % 2 != 0) videoLong--
+
+        val width = if (screenWidth < screenHeight) videoShort else videoLong
+        val height = if (screenWidth < screenHeight) videoLong else videoShort
+
         val resolver = contentResolver
         val contentValues = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, "SONYBAE_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.mp4")
@@ -123,8 +143,7 @@ class ScreenRecordService : Service() {
             setVideoSize(width, height)
             setVideoEncoder(MediaRecorder.VideoEncoder.H264)
             setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            // Bitrate dimaksimalkan ke 20 Mbps untuk gambar jernih anti pecah
-            setVideoEncodingBitRate(20000000) 
+            setVideoEncodingBitRate(targetBitrate) // Menggunakan bitrate pilihan Anda
             setVideoFrameRate(60) 
             prepare()
         }
@@ -137,14 +156,14 @@ class ScreenRecordService : Service() {
         )
 
         mediaRecorder?.start()
-        Toast.makeText(this, "Perekaman HD Dimulai!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Merekam di ${targetResolution}p...", Toast.LENGTH_SHORT).show()
     }
 
     private fun stopRecording() {
         try {
             mediaRecorder?.stop()
             mediaRecorder?.reset()
-            Toast.makeText(this, "Video Tersimpan di Galeri!", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Video Tersimpan!", Toast.LENGTH_LONG).show()
         } catch (e: Exception) { e.printStackTrace() }
         
         mediaProjection?.stop()
@@ -160,8 +179,8 @@ class ScreenRecordService : Service() {
             manager.createNotificationChannel(channel)
         }
         return Notification.Builder(this, channelId)
-            .setContentTitle("SONYBAE HD Recording")
-            .setContentText("Sedang merekam layar...")
+            .setContentTitle("SONYBAE Recording")
+            .setContentText("Merekam di ${targetResolution}p / ${targetBitrate / 1000000} Mbps")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .build()
     }
