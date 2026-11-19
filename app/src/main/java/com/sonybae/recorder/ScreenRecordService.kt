@@ -1,10 +1,10 @@
 package com.sonybae.recorder
 
+import android.annotation.SuppressLint
 import android.app.*
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
-import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.MediaRecorder
@@ -15,11 +15,6 @@ import android.os.Build
 import android.os.Environment
 import android.os.IBinder
 import android.provider.MediaStore
-import android.view.Gravity
-import android.view.LayoutInflater
-import android.view.View
-import android.view.WindowManager
-import android.widget.Button
 import android.widget.Toast
 import java.text.SimpleDateFormat
 import java.util.*
@@ -31,97 +26,65 @@ class ScreenRecordService : Service() {
     private var mediaRecorder: MediaRecorder? = null
     private var videoUri: Uri? = null
 
-    private lateinit var windowManager: WindowManager
-    private lateinit var floatingView: View
+    private var targetBitrate = 20000000
     private var isPaused = false
-    
-    private var targetResolution = 720
-    private var targetBitrate = 15000000
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val resultCode = intent?.getIntExtra("RESULT_CODE", Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED
-        val data = intent?.getParcelableExtra<Intent>("DATA")
+        val action = intent?.action
         
-        // Ambil pengaturan manual dari MainActivity
-        targetResolution = intent?.getIntExtra("RESOLUTION", 720) ?: 720
-        targetBitrate = intent?.getIntExtra("BITRATE", 15000000) ?: 15000000
+        when (action) {
+            "START" -> {
+                targetBitrate = intent.getIntExtra("BITRATE", 20000000)
+                val resultCode = intent.getIntExtra("RESULT_CODE", Activity.RESULT_CANCELED)
+                val data = intent.getParcelableExtra<Intent>("DATA")
 
-        if (resultCode == Activity.RESULT_OK && data != null) {
-            startForeground(1, createNotification())
-            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = projectionManager.getMediaProjection(resultCode, data)
-            setupFloatingWindow()
-            startRecording()
+                if (resultCode == Activity.RESULT_OK && data != null) {
+                    val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                    mediaProjection = projectionManager.getMediaProjection(resultCode, data)
+                    
+                    startForeground(1, createNotification())
+                    startRecording()
+                }
+            }
+            "PAUSE_RESUME" -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    if (isPaused) {
+                        mediaRecorder?.resume()
+                        Toast.makeText(this, "Dilanjutkan...", Toast.LENGTH_SHORT).show()
+                    } else {
+                        mediaRecorder?.pause()
+                        Toast.makeText(this, "Jeda.", Toast.LENGTH_SHORT).show()
+                    }
+                    isPaused = !isPaused
+                    // Update notifikasi agar teks tombol berubah
+                    val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    notificationManager.notify(1, createNotification())
+                }
+            }
+            "STOP" -> {
+                stopRecording()
+            }
         }
         return START_NOT_STICKY
     }
 
-    private fun setupFloatingWindow() {
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        floatingView = LayoutInflater.from(this).inflate(R.layout.layout_floating_control, null)
-
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            else WindowManager.LayoutParams.TYPE_PHONE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        )
-        params.gravity = Gravity.TOP or Gravity.START
-        params.x = 20
-        params.y = 150
-
-        windowManager.addView(floatingView, params)
-
-        val btnPause = floatingView.findViewById<Button>(R.id.btnPauseResume)
-        val btnStop = floatingView.findViewById<Button>(R.id.btnStop)
-
-        btnPause.setOnClickListener {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                if (isPaused) {
-                    mediaRecorder?.resume()
-                    btnPause.text = "PAUSE"
-                } else {
-                    mediaRecorder?.pause()
-                    btnPause.text = "RESUME"
-                }
-                isPaused = !isPaused
-            }
-        }
-
-        btnStop.setOnClickListener {
-            stopRecording()
-        }
-    }
-
+    @SuppressLint("MissingPermission")
     private fun startRecording() {
         val metrics = resources.displayMetrics
-        val screenWidth = metrics.widthPixels
-        val screenHeight = metrics.heightPixels
+        // MENGAMBIL RESOLUSI MENTAH DARI HARDWARE (MENCEGAH BORDER HITAM)
+        var width = metrics.widthPixels
+        var height = metrics.heightPixels
         val density = metrics.densityDpi
 
-        // Kalkulasi resolusi proporsional sesuai rasio layar HP
-        val shortSide = Math.min(screenWidth, screenHeight)
-        val longSide = Math.max(screenWidth, screenHeight)
-        val scale = targetResolution.toFloat() / shortSide.toFloat()
-        
-        var videoShort = targetResolution
-        var videoLong = (longSide * scale).toInt()
-
-        // WAJIB: Resolusi video Android harus genap, jika ganjil codec akan error
-        if (videoShort % 2 != 0) videoShort--
-        if (videoLong % 2 != 0) videoLong--
-
-        val width = if (screenWidth < screenHeight) videoShort else videoLong
-        val height = if (screenWidth < screenHeight) videoLong else videoShort
+        // Pastikan genap agar codec H264 tidak crash
+        if (width % 2 != 0) width--
+        if (height % 2 != 0) height--
 
         val resolver = contentResolver
         val contentValues = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, "SONYBAE_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.mp4")
+            put(MediaStore.Video.Media.DISPLAY_NAME, "SONYBAE_FULL_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.mp4")
             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/SONYBAE")
@@ -134,7 +97,13 @@ class ScreenRecordService : Service() {
         mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
 
         mediaRecorder?.apply {
-            setAudioSource(MediaRecorder.AudioSource.MIC)
+            // MENGGUNAKAN AUDIO INTERNAL (SUARA GAME/SISTEM, BUKAN MIC)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                setAudioSource(MediaRecorder.AudioSource.PLAYBACK_CAPTURE)
+            } else {
+                setAudioSource(MediaRecorder.AudioSource.REMOTE_SUBMIX)
+            }
+            
             setVideoSource(MediaRecorder.VideoSource.SURFACE)
             setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             if (fileDescriptor != null) {
@@ -143,7 +112,7 @@ class ScreenRecordService : Service() {
             setVideoSize(width, height)
             setVideoEncoder(MediaRecorder.VideoEncoder.H264)
             setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            setVideoEncodingBitRate(targetBitrate) // Menggunakan bitrate pilihan Anda
+            setVideoEncodingBitRate(targetBitrate) 
             setVideoFrameRate(60) 
             prepare()
         }
@@ -156,21 +125,21 @@ class ScreenRecordService : Service() {
         )
 
         mediaRecorder?.start()
-        Toast.makeText(this, "Merekam di ${targetResolution}p...", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Merekam Full Screen & Audio Internal", Toast.LENGTH_SHORT).show()
     }
 
     private fun stopRecording() {
         try {
             mediaRecorder?.stop()
             mediaRecorder?.reset()
-            Toast.makeText(this, "Video Tersimpan!", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Video HD Tersimpan!", Toast.LENGTH_LONG).show()
         } catch (e: Exception) { e.printStackTrace() }
         
         mediaProjection?.stop()
-        if (::floatingView.isInitialized) windowManager.removeView(floatingView)
         stopSelf()
     }
 
+    // KONTROL VIA NOTIFIKASI (MENCEGAH TOMBOL MUNCUL DI VIDEO)
     private fun createNotification(): Notification {
         val channelId = "record_channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -178,10 +147,24 @@ class ScreenRecordService : Service() {
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
         }
+
+        // Action Intent untuk Pause/Resume
+        val pauseIntent = Intent(this, ScreenRecordService::class.java).apply { action = "PAUSE_RESUME" }
+        val pausePendingIntent = PendingIntent.getService(this, 0, pauseIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        // Action Intent untuk Stop
+        val stopIntent = Intent(this, ScreenRecordService::class.java).apply { action = "STOP" }
+        val stopPendingIntent = PendingIntent.getService(this, 1, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        val pauseText = if (isPaused) "▶️ RESUME" else "⏸️ PAUSE"
+
         return Notification.Builder(this, channelId)
-            .setContentTitle("SONYBAE Recording")
-            .setContentText("Merekam di ${targetResolution}p / ${targetBitrate / 1000000} Mbps")
+            .setContentTitle("🔴 SONYBAE Sedang Merekam")
+            .setContentText("Kontrol perekaman dari sini (tidak akan terekam)")
             .setSmallIcon(android.R.drawable.ic_media_play)
+            .addAction(android.R.drawable.ic_media_pause, pauseText, pausePendingIntent)
+            .addAction(android.R.drawable.ic_delete, "⏹️ STOP", stopPendingIntent)
+            .setOngoing(true) // Notifikasi tidak bisa di-swipe
             .build()
     }
 }
