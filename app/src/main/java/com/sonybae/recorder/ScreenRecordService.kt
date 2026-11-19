@@ -78,11 +78,31 @@ class ScreenRecordService : Service() {
     private var muxerStarted = false
     private var audioEnabled = true
 
+    // MediaCodec surface timestamps may be based on the device monotonic clock.
+    // Rebase each muxer track to zero to avoid huge/overflowed MP4 durations.
+    private var videoPtsBaseUs: Long? = null
+    private var audioPtsBaseUs: Long? = null
+    private var lastVideoPtsUs = -1L
+    private var lastAudioPtsUs = -1L
+    private var videoFrameDurationUs = 33_333L
+    private val audioFrameDurationUs = 1_024_000_000L / SAMPLE_RATE
+
     private val muxerLock = Object()
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile
     private var recording = false
+
+    @Volatile
+    private var stopping = false
+
+    @Volatile
+    private var videoDrainFailed = false
+
+    @Volatile
+    private var audioDrainFailed = false
+
+    private val stopLock = Object()
 
     private var videoThread: Thread? = null
     private var audioThread: Thread? = null
@@ -123,7 +143,20 @@ class ScreenRecordService : Service() {
     }
 
     private fun startRecording(intent: Intent) {
-        if (recording) return
+        if (recording || stopping) return
+
+        // Reset per-recording state in case this Service instance is reused.
+        videoTrackIndex = -1
+        audioTrackIndex = -1
+        muxerStarted = false
+        audioEnabled = true
+        videoPtsBaseUs = null
+        audioPtsBaseUs = null
+        lastVideoPtsUs = -1L
+        lastAudioPtsUs = -1L
+        videoFrameDurationUs = 1_000_000L / 30L
+        videoDrainFailed = false
+        audioDrainFailed = false
 
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
         val resultData: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -175,22 +208,15 @@ class ScreenRecordService : Service() {
             // Video encoder dengan fallback bertingkat (encoder MediaTek sering
             // menolak kombinasi bitrate/fps tinggi, yang sebelumnya bikin crash).
             val bundle = createVideoEncoder(width, height, requestedBitrate, requestedFps)
+            videoFrameDurationUs = 1_000_000L / maxOf(1, bundle.fps)
             videoEncoder = bundle.encoder
 
             // Output file (langsung ke MediaStore, IS_PENDING sampai selesai)
             val uri = createOutputUri()
-            if (uri == null) {
-                toast("Gagal membuat file output.")
-                stopSelf()
-                return
-            }
+                ?: throw IllegalStateException("Gagal membuat file output MediaStore")
             outputUri = uri
             val pfd = contentResolver.openFileDescriptor(uri, "rw")
-            if (pfd == null) {
-                toast("Gagal membuka file output.")
-                stopSelf()
-                return
-            }
+                ?: throw IllegalStateException("Gagal membuka file output MediaStore")
             outputPfd = pfd
             muxer = MediaMuxer(pfd.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
 
@@ -224,7 +250,9 @@ class ScreenRecordService : Service() {
         } catch (t: Throwable) {
             Log.e(TAG, "startRecording failed", t)
             toast("Gagal mulai merekam: ${t.message}")
+            recording = false
             releaseAll()
+            stopForeground(true)
             stopSelf()
         }
     }
@@ -261,10 +289,18 @@ class ScreenRecordService : Service() {
         for (br in intArrayOf(bitrate, 12_000_000, 10_000_000, 8_000_000, 5_000_000)) {
             attempts.add(EncoderAttempt(width, height, br, 30))
         }
-        if (width > 720) {
-            val scaledHeight = alignEven(height * 720 / width)
-            attempts.add(EncoderAttempt(720, scaledHeight, 8_000_000, 30))
-            attempts.add(EncoderAttempt(720, scaledHeight, 5_000_000, 30))
+        // Fallback resolusi berdasarkan sisi panjang, berlaku portrait maupun landscape.
+        // Itel P55 portrait 720x1612 tetap mencoba native dulu; bila hardware menolak,
+        // turunkan bertahap dengan rasio layar tetap sama.
+        val longSide = maxOf(width, height)
+        for (targetLongSide in intArrayOf(1080, 960, 720)) {
+            if (longSide > targetLongSide) {
+                val scale = targetLongSide.toFloat() / longSide
+                val scaledWidth = alignEven((width * scale).toInt())
+                val scaledHeight = alignEven((height * scale).toInt())
+                attempts.add(EncoderAttempt(scaledWidth, scaledHeight, 8_000_000, 30))
+                attempts.add(EncoderAttempt(scaledWidth, scaledHeight, 5_000_000, 30))
+            }
         }
         // Buang percobaan duplikat supaya tidak mencoba konfigurasi yang sama 2x.
         val uniqueAttempts = attempts.distinct()
@@ -359,6 +395,7 @@ class ScreenRecordService : Service() {
             }
 
             val aEnc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+            audioEncoder = aEnc
             aEnc.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             aEnc.start()
 
@@ -383,18 +420,23 @@ class ScreenRecordService : Service() {
 
             if (record.state != AudioRecord.STATE_INITIALIZED) {
                 runCatching { record.release() }
-                runCatching { aEnc.stop(); aEnc.release() }
+                runCatching { aEnc.stop() }
+                runCatching { aEnc.release() }
+                audioEncoder = null
                 Log.w(TAG, "AudioRecord tidak terinisialisasi")
                 return false
             }
 
-            record.startRecording()
             audioRecord = record
-            audioEncoder = aEnc
+            record.startRecording()
             true
         } catch (t: Throwable) {
             Log.e(TAG, "Audio internal gagal disiapkan", t)
-            runCatching { audioEncoder?.stop(); audioEncoder?.release() }
+            runCatching { audioRecord?.stop() }
+            runCatching { audioRecord?.release() }
+            audioRecord = null
+            runCatching { audioEncoder?.stop() }
+            runCatching { audioEncoder?.release() }
             audioEncoder = null
             false
         }
@@ -405,30 +447,38 @@ class ScreenRecordService : Service() {
     private fun drainVideo() {
         val codec = videoEncoder ?: return
         val info = MediaCodec.BufferInfo()
+        var stopDeadline = 0L
         try {
-            while (recording) {
+            while (true) {
+                if (!recording && stopDeadline == 0L) {
+                    stopDeadline = System.nanoTime() + 10_000_000_000L
+                }
                 val index = codec.dequeueOutputBuffer(info, 10_000)
                 when {
-                    index == MediaCodec.INFO_TRY_AGAIN_LATER -> continue
+                    index == MediaCodec.INFO_TRY_AGAIN_LATER -> {
+                        if (!recording && System.nanoTime() > stopDeadline) break
+                    }
                     index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         onFormatChanged(isVideo = true, codec.outputFormat)
                     }
                     index >= 0 -> {
+                        val endOfStream = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                        val isConfig = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
                         val buffer = codec.getOutputBuffer(index)
-                        val isConfig =
-                            info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
                         if (buffer != null && info.size > 0 && !isConfig) {
                             buffer.position(info.offset)
                             buffer.limit(info.offset + info.size)
                             writeSample(isVideo = true, buffer, info)
                         }
                         codec.releaseOutputBuffer(index, false)
+                        if (endOfStream) break
                     }
-                    else -> continue
+                    else -> if (!recording && System.nanoTime() > stopDeadline) break
                 }
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "drainVideo berhenti: ${t.message}")
+            videoDrainFailed = true
+            Log.e(TAG, "drainVideo berhenti", t)
         }
     }
 
@@ -441,13 +491,18 @@ class ScreenRecordService : Service() {
         mainHandler.postDelayed({
             synchronized(muxerLock) {
                 val m = muxer ?: return@postDelayed
+                if (stopping || !recording) return@postDelayed
                 if (muxerStarted) return@postDelayed
                 if (videoTrackIndex < 0) return@postDelayed
                 if (audioTrackIndex >= 0) return@postDelayed
                 Log.w(TAG, "Format audio tidak muncul, lanjut video saja.")
                 audioEnabled = false
-                if (runCatching { m.start() }.isSuccess) {
+                try {
+                    m.start()
                     muxerStarted = true
+                } catch (t: Throwable) {
+                    Log.e(TAG, "Gagal memulai muxer video-saja", t)
+                    mainHandler.post { stopRecording() }
                 }
             }
         }, 2000)
@@ -459,26 +514,42 @@ class ScreenRecordService : Service() {
         val info = MediaCodec.BufferInfo()
         val bytesPerSecond = SAMPLE_RATE.toLong() * CHANNEL_COUNT * 2L
         var totalBytes = 0L
+        var inputEosQueued = false
+        var sawEos = false
+        var stopDeadline = 0L
         val scratch = java.nio.ByteBuffer.allocateDirect(16384)
 
         try {
-            while (recording) {
+            while (true) {
+                if (!recording && stopDeadline == 0L) {
+                    stopDeadline = System.nanoTime() + 10_000_000_000L
+                }
                 val inIndex = codec.dequeueInputBuffer(10_000)
                 if (inIndex >= 0) {
                     val inBuffer = codec.getInputBuffer(inIndex)
                     if (inBuffer != null) {
-                        scratch.clear()
-                        val read = record.read(scratch, scratch.capacity())
-                        if (read > 0) {
-                            val ptsUs = totalBytes * 1_000_000L / bytesPerSecond
-                            totalBytes += read
-                            scratch.position(0)
-                            scratch.limit(read)
-                            inBuffer.clear()
-                            inBuffer.put(scratch)
-                            codec.queueInputBuffer(inIndex, 0, read, ptsUs, 0)
+                        if (!recording && !inputEosQueued) {
+                            codec.queueInputBuffer(
+                                inIndex, 0, 0,
+                                totalBytes * 1_000_000L / bytesPerSecond,
+                                MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                            )
+                            inputEosQueued = true
+                        } else if (recording) {
+                            scratch.clear()
+                            val read = record.read(scratch, scratch.capacity())
+                            if (read > 0) {
+                                val ptsUs = totalBytes * 1_000_000L / bytesPerSecond
+                                totalBytes += read
+                                scratch.position(0)
+                                scratch.limit(read)
+                                inBuffer.clear()
+                                inBuffer.put(scratch)
+                                codec.queueInputBuffer(inIndex, 0, read, ptsUs, 0)
+                            } else {
+                                codec.queueInputBuffer(inIndex, 0, 0, 0, 0)
+                            }
                         } else {
-                            // Belum ada data: kembalikan buffer tanpa menulis sample.
                             codec.queueInputBuffer(inIndex, 0, 0, 0, 0)
                         }
                     }
@@ -492,19 +563,23 @@ class ScreenRecordService : Service() {
                         continue
                     }
                     if (outIndex < 0) break
+                    val endOfStream = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                     val buffer = codec.getOutputBuffer(outIndex)
-                    val isConfig =
-                        info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
+                    val isConfig = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
                     if (buffer != null && info.size > 0 && !isConfig) {
                         buffer.position(info.offset)
                         buffer.limit(info.offset + info.size)
                         writeSample(isVideo = false, buffer, info)
                     }
                     codec.releaseOutputBuffer(outIndex, false)
+                    if (endOfStream) sawEos = true
                 }
+
+                if (sawEos || (!recording && System.nanoTime() > stopDeadline)) break
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "drainAudio berhenti: ${t.message}")
+            audioDrainFailed = true
+            Log.e(TAG, "drainAudio berhenti", t)
         }
     }
 
@@ -541,8 +616,35 @@ class ScreenRecordService : Service() {
             val m = muxer ?: return
             val track = if (isVideo) videoTrackIndex else audioTrackIndex
             if (track < 0) return
+
+            // Normalize timestamps independently per track to start at 0.
+            // Ensure strict monotonicity because some vendor codecs repeat PTS.
+            val pts = info.presentationTimeUs
+            val base = if (isVideo) videoPtsBaseUs else audioPtsBaseUs
+            val normalizedBase = base ?: pts.also {
+                if (isVideo) videoPtsBaseUs = it else audioPtsBaseUs = it
+            }
+            var normalizedPts = (pts - normalizedBase).coerceAtLeast(0L)
+            if (isVideo) {
+                // Preserve the frame cadence when MediaTek occasionally repeats PTS.
+                if (normalizedPts <= lastVideoPtsUs) {
+                    normalizedPts = lastVideoPtsUs + videoFrameDurationUs
+                }
+                lastVideoPtsUs = normalizedPts
+            } else {
+                // AAC output carries 1024-sample access units; correct any repeated
+                // or regressing codec timestamp by one AAC frame duration.
+                if (normalizedPts <= lastAudioPtsUs) {
+                    normalizedPts = lastAudioPtsUs + audioFrameDurationUs
+                }
+                lastAudioPtsUs = normalizedPts
+            }
+
+            val normalizedInfo = MediaCodec.BufferInfo().apply {
+                set(info.offset, info.size, normalizedPts, info.flags)
+            }
             try {
-                m.writeSampleData(track, buffer, info)
+                m.writeSampleData(track, buffer, normalizedInfo)
             } catch (t: Throwable) {
                 Log.w(TAG, "writeSample gagal: ${t.message}")
             }
@@ -552,57 +654,81 @@ class ScreenRecordService : Service() {
     // ---------------------------------------------------------------- STOP
 
     private fun stopRecording() {
-        if (!recording && muxer == null) {
-            stopSelf()
-            return
-        }
-        recording = false
-
-        runCatching { audioRecord?.stop() }
-
-        joinQuietly(videoThread)
-        joinQuietly(audioThread)
-        videoThread = null
-        audioThread = null
-
-        runCatching { virtualDisplay?.release() }
-        virtualDisplay = null
-
-        var finalizeOk = false
-        synchronized(muxerLock) {
-            val m = muxer
-            if (m != null) {
-                if (muxerStarted) {
-                    finalizeOk = runCatching { m.stop() }.isSuccess
-                }
-                runCatching { m.release() }
+        synchronized(stopLock) {
+            if (stopping) return
+            if (!recording && muxer == null) {
+                stopSelf()
+                return
             }
-            muxer = null
-            muxerStarted = false
+            stopping = true
         }
 
-        runCatching { videoEncoder?.stop() }
-        runCatching { videoEncoder?.release() }
-        videoEncoder = null
+        try {
+            // Hentikan sumber frame lebih dulu, lalu minta encoder mengeluarkan EOS.
+            recording = false
+            runCatching { audioRecord?.stop() }
+            runCatching { virtualDisplay?.release() }
+            virtualDisplay = null
+            runCatching { videoEncoder?.signalEndOfInputStream() }
 
-        runCatching { audioEncoder?.stop() }
-        runCatching { audioEncoder?.release() }
-        audioEncoder = null
+            // Beri encoder waktu mengeluarkan semua sample akhir sebelum muxer ditutup.
+            // Satu deadline bersama mencegah dua thread memblokir service hingga 24 detik.
+            val drainDeadline = System.nanoTime() + 12_000_000_000L
+            val videoDrained = joinQuietly(videoThread, drainDeadline)
+            val audioDrained = joinQuietly(audioThread, drainDeadline)
+            videoThread = null
+            audioThread = null
+            val drainsFinished =
+                videoDrained && audioDrained && !videoDrainFailed && !audioDrainFailed
+            if (!drainsFinished) {
+                Log.e(TAG, "Timeout menunggu drain encoder; batalkan file agar tidak menyimpan MP4 rusak.")
+            }
 
-        runCatching { audioRecord?.release() }
-        audioRecord = null
+            var finalizeOk = false
+            synchronized(muxerLock) {
+                val m = muxer
+                if (m != null) {
+                    if (muxerStarted && drainsFinished) {
+                        finalizeOk = runCatching { m.stop() }.isSuccess
+                    }
+                    runCatching { m.release() }
+                }
+                muxer = null
+                muxerStarted = false
+            }
+            // A file is complete only if muxer.stop succeeded and every worker
+            // drained normally; don't publish partially written MP4 data.
+            finalizeOk = finalizeOk && drainsFinished
 
-        runCatching { projection?.stop() }
-        projection = null
+            runCatching { videoEncoder?.stop() }
+            runCatching { videoEncoder?.release() }
+            videoEncoder = null
 
-        runCatching { outputPfd?.close() }
-        outputPfd = null
+            runCatching { audioEncoder?.stop() }
+            runCatching { audioEncoder?.release() }
+            audioEncoder = null
 
-        finishOutput(finalizeOk)
-        toast(if (finalizeOk) "Video tersimpan di Galeri > Movies > SONYBAE" else "Rekaman gagal disimpan.")
+            runCatching { audioRecord?.release() }
+            audioRecord = null
 
-        stopForeground(true)
-        stopSelf()
+            runCatching { projection?.stop() }
+            projection = null
+
+            runCatching { outputPfd?.close() }
+            outputPfd = null
+
+            finishOutput(finalizeOk)
+            toast(
+                if (finalizeOk) "Video tersimpan di Galeri > Movies > SONYBAE"
+                else "Rekaman gagal disimpan."
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "stopRecording gagal", t)
+            releaseAll()
+        } finally {
+            stopForeground(true)
+            stopSelf()
+        }
     }
 
     private fun finishOutput(success: Boolean) {
@@ -622,16 +748,25 @@ class ScreenRecordService : Service() {
         }
     }
 
-    private fun joinQuietly(thread: Thread?) {
-        if (thread == null) return
-        runCatching { thread.join(2000) }
+    private fun joinQuietly(thread: Thread?, deadlineNs: Long): Boolean {
+        if (thread == null || thread === Thread.currentThread()) return true
+        val remainingNs = deadlineNs - System.nanoTime()
+        if (remainingNs > 0L) {
+            val remainingMs = (remainingNs + 999_999L) / 1_000_000L
+            runCatching { thread.join(remainingMs) }
+        }
+        return !thread.isAlive
     }
 
     private fun releaseAll() {
         recording = false
         runCatching { audioRecord?.stop() }
-        joinQuietly(videoThread)
-        joinQuietly(audioThread)
+        runCatching { virtualDisplay?.release() }
+        virtualDisplay = null
+        runCatching { videoEncoder?.signalEndOfInputStream() }
+        val drainDeadline = System.nanoTime() + 12_000_000_000L
+        joinQuietly(videoThread, drainDeadline)
+        joinQuietly(audioThread, drainDeadline)
         videoThread = null
         audioThread = null
         synchronized(muxerLock) {
