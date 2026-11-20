@@ -5,9 +5,10 @@ Outputs (app/src/main/res/drawable-nodpi):
   bg_gta_art.jpg        1080x2418 comic-panel collage master
   bg_gta_art_screen.jpg 720x1612 darkened, device-sized background
   logo_gta.png          "grand theft auto / San Andreas" stacked wordmark
-  logo_pricedown.png    oversized PRICEDOWN title wordmark
+  logo_gta_wide.png     wide hero lockup for the phone UI
+  logo_sonybaeproject.png oversized SONYBAEPROJECT title wordmark
   logo_sonybae.png      "SONYBAE RECORDER" glossy white outlined wordmark
-  tex_panel.png     400x400 seamless grunge tile
+  tex_panel.png         400x400 seamless grunge tile
 
 Pure Pillow drawing so the repo can rebuild the art without external tools.
 Run: python3 tools/theme/make_assets.py
@@ -18,11 +19,12 @@ import math
 import random
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "app/src/main/res/drawable-nodpi"
 FONTS = ROOT / "app/src/main/res/font"
+SOURCE = ROOT / "tools/theme/source"
 PREVIEW = Path("/tmp")
 
 PRICEDOWN = str(FONTS / "pricedown.ttf")
@@ -372,56 +374,53 @@ def panel_bottom(h):
 
 
 def make_background():
-    canvas = Image.new("RGBA", (W, H), (16, 15, 13, 255))
+    """Build a saturated GTA-style comic collage behind the recorder controls."""
+    canvas = Image.new("RGBA", (W, H), (8, 7, 6, 255))
+    source = SOURCE
 
-    top_h = int(H * 0.330)
-    mid_h = int(H * 0.290)
-    bot_h = H - top_h - mid_h
+    def fit_panel(image, box, centering=(0.5, 0.5), brightness=0.76):
+        x0, y0, x1, y1 = box
+        image = ImageOps.fit(image.convert("RGB"), (x1 - x0, y1 - y0),
+                             method=Image.Resampling.LANCZOS, centering=centering)
+        image = ImageEnhance.Color(image).enhance(1.18)
+        image = ImageEnhance.Contrast(image).enhance(1.08)
+        image = ImageEnhance.Brightness(image).enhance(brightness)
+        canvas.paste(image, (x0, y0))
 
-    canvas.paste(panel_top(top_h), (0, 0))
-    mid_y = top_h
-    canvas.paste(panel_mid(mid_h), (0, mid_y))
-    bot_y = top_h + mid_h
-    canvas.paste(panel_bottom(bot_h), (0, bot_y))
+    grove = Image.open(source / "grove_heli.webp").convert("RGB")
+    woman = Image.open(source / "woman.webp").convert("RGB")
+    driveby = Image.open(source / "driveby.webp").convert("RGB")
+    bmx = Image.open(source / "bmx.webp").convert("RGB")
 
-    pd = ImageDraw.Draw(canvas)
-    # mid panel: small lowrider riding the road, driving right
-    lowrider(pd, int(W * 0.46), mid_y + int(mid_h * 0.80), 470,
-             body=(60, 48, 36), trim=(148, 124, 92), glass=(120, 104, 84),
-             arch=(126, 110, 88), lights=False)
-    # bottom panel: hero lowrider in the foreground
-    lowrider(pd, int(W * 0.50), bot_y + int(bot_h * 0.99), 720,
-             body=(36, 36, 31), trim=(178, 172, 142), glass=(112, 112, 96),
-             arch=(104, 104, 90))
-    # bottom panel: second car parked right, behind the fence
-    lowrider(pd, int(W * 0.80), bot_y + int(bot_h * 0.655), 340,
-             body=(62, 62, 54), trim=(150, 148, 124), glass=(112, 112, 96),
-             arch=(114, 114, 98), lights=False)
+    # A poster-like grid of colorful panels leaves the title and controls
+    # readable while using the supplied Grove Street artwork.
+    fit_panel(grove.crop((0, 0, 270, grove.height)), (0, 0, 522, 560),
+              centering=(0.34, 0.48), brightness=0.98)
+    fit_panel(grove.crop((230, 0, grove.width, grove.height)), (538, 0, W, 560),
+              centering=(0.58, 0.48), brightness=0.96)
+    fit_panel(woman, (0, 580, 492, 1216), centering=(0.5, 0.22), brightness=0.96)
+    fit_panel(bmx, (508, 580, W, 1216), centering=(0.5, 0.42), brightness=0.94)
+    fit_panel(driveby, (0, 1236, 648, 1804), centering=(0.50, 0.5), brightness=0.94)
+    fit_panel(woman, (664, 1236, W, 1804), centering=(0.5, 0.58), brightness=0.94)
+    fit_panel(bmx, (0, 1824, 520, H), centering=(0.48, 0.72), brightness=0.91)
+    fit_panel(driveby, (536, 1824, W, H), centering=(0.64, 0.52), brightness=0.91)
 
-    # ink gutters between panels (torn comic separators)
-    sep = ImageDraw.Draw(canvas)
-    sep.polygon([(0, mid_y - 16), (W, mid_y - 44), (W, mid_y + 4), (0, mid_y + 32)],
-                fill=GUTTER)
-    sep.polygon([(0, bot_y - 26), (W, bot_y - 4), (W, bot_y + 36), (0, bot_y + 14)],
-                fill=GUTTER)
+    # Irregular ink gutters mimic the angled panel cuts on the reference poster.
+    ink = ImageDraw.Draw(canvas)
+    ink.polygon([(0, 552), (522, 526), (538, 0), (558, 0), (538, 562), (0, 590)],
+                fill=(7, 6, 6))
+    ink.polygon([(0, 1208), (492, 1184), (508, 580), (526, 580), (510, 1220), (0, 1244)],
+                fill=(7, 6, 6))
+    ink.polygon([(648, 1236), (666, 1236), (650, 1804), (664, 1804), (664, 1824),
+                 (632, 1824)], fill=(7, 6, 6))
+    ink.polygon([(0, 1804), (648, 1780), (664, 1236), (684, 1236), (676, 1820),
+                 (0, 1844)], fill=(7, 6, 6))
+    ink.polygon([(520, 1824), (536, 1824), (520, H), (500, H)], fill=(7, 6, 6))
 
-    # aged print: halftone + fine grain + scratches
-    halftone(canvas, spacing=11, r=1.7, alpha=14)
-    g = grain((W, H), 14, 5)
-    canvas = Image.composite(canvas, Image.new("RGBA", (W, H), (26, 24, 20, 255)),
-                             g.point(lambda v: 186 + v // 7))
-    scratches(canvas, 90)
-
-    # warm grade + vignette so the UI text layer stays legible
-    canvas.alpha_composite(Image.new("RGBA", (W, H), (255, 196, 120, 14)))
-
-    mask = Image.new("L", (W, H), 0)
-    ImageDraw.Draw(mask).ellipse(
-        [-int(W * 0.46), -int(H * 0.18), int(W * 1.46), int(H * 1.18)], fill=255)
-    mask = mask.filter(ImageFilter.GaussianBlur(210))
-    dark = Image.new("RGBA", (W, H), (8, 7, 5, 255))
-    dark.putalpha(Image.eval(mask, lambda v: int((255 - v) * 0.78)))
-    canvas.alpha_composite(dark)
+    # Light print grain keeps the comic treatment without washing out its colors.
+    halftone(canvas, spacing=17, r=1.15, alpha=18)
+    overlay = Image.new("RGBA", (W, H), (5, 4, 4, 12))
+    canvas = Image.alpha_composite(canvas.convert("RGBA"), overlay)
     return canvas.convert("RGB")
 
 
@@ -492,6 +491,15 @@ def make_gta_logo():
     return tight(img, 10)
 
 
+def make_gta_logo_wide():
+    """Wide hero lockup sized for a phone poster-style recorder screen."""
+    logo = make_gta_logo().resize((1030, 430), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGBA", (1080, 460), (0, 0, 0, 0))
+    canvas.alpha_composite(logo, ((canvas.width - logo.width) // 2,
+                                  (canvas.height - logo.height) // 2))
+    return canvas
+
+
 def make_wordmark(text, max_w, glow=13, top=(255, 255, 255), bottom=(206, 206, 210),
                   stroke=(10, 9, 8)):
     f = fit_font(PRICEDOWN, text, max_w, 520)
@@ -543,10 +551,86 @@ def mod(v, n):
     return v % n
 
 
-def make_pricedown_logo():
-    return make_wordmark("PRICEDOWN", 1020, glow=0,
-                        top=(255, 255, 250), bottom=(255, 255, 250),
-                        stroke=(8, 7, 6))
+def make_sonybaeproject_logo():
+    """Wide primary title; white face and strong GTA-style black outline."""
+    return make_wordmark("SONYBAEPROJECT", 1480, glow=0,
+                         top=(255, 255, 250), bottom=(228, 228, 232),
+                         stroke=(8, 7, 6))
+
+
+def make_comic_strips():
+    """Compose the supplied Grove/heli and character scenes into comic strips."""
+    header = Image.new("RGB", (720, 224), (8, 7, 6))
+    grove = Image.open(SOURCE / "grove_heli.webp").convert("RGB")
+    grove = ImageOps.fit(grove, (704, 204), method=Image.Resampling.LANCZOS,
+                         centering=(0.50, 0.50))
+    grove = ImageEnhance.Brightness(grove).enhance(0.82)
+    header.paste(grove, (8, 8))
+    hd = ImageDraw.Draw(header)
+    hd.rectangle((0, 0, 719, 223), outline=(8, 7, 6), width=8)
+    hd.rectangle((8, 8, 711, 215), outline=(214, 170, 92), width=2)
+    fade = Image.new("RGBA", header.size, (0, 0, 0, 0))
+    fd = ImageDraw.Draw(fade)
+    for y in range(128, 215):
+        alpha = int(150 * (y - 128) / 87)
+        fd.line((10, y, 710, y), fill=(0, 0, 0, alpha))
+    header = Image.alpha_composite(header.convert("RGBA"), fade).convert("RGB")
+    header.save(OUT / "gta_comic_header.png", optimize=True)
+
+    footer = Image.new("RGB", (720, 184), (8, 7, 6))
+    inner_h = 164
+    woman = ImageOps.fit(
+        Image.open(SOURCE / "woman.webp").convert("RGB"), (132, inner_h),
+        method=Image.Resampling.LANCZOS, centering=(0.50, 0.30))
+    driveby = ImageOps.fit(
+        Image.open(SOURCE / "driveby.webp").convert("RGB"), (420, inner_h),
+        method=Image.Resampling.LANCZOS, centering=(0.50, 0.50))
+    bmx_src = Image.open(SOURCE / "bmx.webp").convert("RGB")
+    bmx = Image.new("RGB", (132, inner_h), (32, 55, 56))
+    bmx_fit = ImageOps.contain(bmx_src, (132, inner_h), method=Image.Resampling.LANCZOS)
+    bmx.paste(bmx_fit, ((132 - bmx_fit.width) // 2, (inner_h - bmx_fit.height) // 2))
+    footer.paste(woman, (8, 10))
+    footer.paste(driveby, (150, 10))
+    footer.paste(bmx, (580, 10))
+    fd = ImageDraw.Draw(footer)
+    fd.rectangle((0, 0, 719, 183), outline=(8, 7, 6), width=8)
+    for box in ((8, 10, 140, 173), (150, 10, 570, 173), (580, 10, 712, 173)):
+        fd.rectangle(box, outline=(214, 170, 92), width=2)
+    fd.line((142, 10, 148, 174), fill=(8, 7, 6), width=8)
+    fd.line((572, 10, 578, 174), fill=(8, 7, 6), width=8)
+    footer.save(OUT / "gta_comic_footer.png", optimize=True)
+
+
+def make_car_logo_panel():
+    """Place the GTA title over the lowrider scene at the bottom of the screen."""
+    bg = make_background().convert("RGB")
+    # Use the bottom hero-lowrider crop with a wide aspect so both the car and
+    # the full stacked title stay visible inside the phone UI.
+    car_top = int(H * 0.82)
+    panel = ImageOps.fit(bg.crop((0, car_top, W, H)), (720, 240),
+                         method=Image.Resampling.LANCZOS, centering=(0.50, 0.58))
+    panel = ImageEnhance.Brightness(panel).enhance(0.68)
+    overlay = Image.new("RGBA", panel.size, (8, 7, 6, 34))
+    panel_rgba = Image.alpha_composite(panel.convert("RGBA"), overlay)
+
+    # The GTA mark is a tall left comic plate, while the car stays visible
+    # across the remaining width on the right.
+    logo = make_gta_logo()
+    logo.thumbnail((210, 222), Image.Resampling.LANCZOS)
+    plaque = Image.new("RGBA", (228, 228), (8, 7, 6, 184))
+    px = (plaque.width - logo.width) // 2
+    py = (plaque.height - logo.height) // 2
+    plaque.alpha_composite(logo, (px, py))
+    pd = ImageDraw.Draw(plaque)
+    pd.rectangle((1, 1, plaque.width - 2, plaque.height - 2),
+                 outline=(214, 170, 92, 255), width=2)
+    panel_rgba.alpha_composite(plaque, (10, 6))
+
+    d = ImageDraw.Draw(panel_rgba)
+    d.rectangle((0, 0, 719, 239), outline=(8, 7, 6, 255), width=8)
+    d.rectangle((8, 8, 711, 231), outline=(214, 170, 92, 255), width=2)
+    panel_rgba.convert("RGB").save(OUT / "gta_car_logo_panel.jpg", quality=88,
+                                    optimize=True, progressive=True)
 
 
 def make_panel_texture(size=400):
@@ -582,10 +666,11 @@ def main():
     bg = make_background()
     bg.save(OUT / "bg_gta_art.jpg", quality=86, optimize=True, progressive=True)
 
-    # Device-sized background avoids decoding the full 1080x2418 master into
-    # a large ARGB bitmap on lower-memory phones. The recording canvas is 720x1612.
+    # Device-sized poster collage avoids decoding the full master into a large
+    # bitmap on lower-memory phones. Keep the art bright enough to show through
+    # the translucent recording panel instead of crushing its comic colors.
     screen_bg = bg.resize((720, 1612), Image.LANCZOS)
-    screen_bg = screen_bg.point(lambda value: int(value * 0.58))
+    screen_bg = screen_bg.point(lambda value: int(min(255, value * 0.92)))
     screen_bg.save(OUT / "bg_gta_art_screen.jpg", quality=84, optimize=True,
                    progressive=True)
     screen_bg.resize((432, 967), Image.LANCZOS).save(
@@ -595,15 +680,18 @@ def main():
     gta.save(OUT / "logo_gta.png")
     gta.resize((gta.width // 2, gta.height // 2), Image.LANCZOS).save(
         PREVIEW / "preview_logo_gta.png")
+    make_gta_logo_wide().save(OUT / "logo_gta_wide.png")
 
-    pricedown = make_pricedown_logo()
-    pricedown.save(OUT / "logo_pricedown.png")
+    sonybaeproject = make_sonybaeproject_logo()
+    sonybaeproject.save(OUT / "logo_sonybaeproject.png")
 
     mark = make_wordmark("SONYBAE RECORDER", 980, glow=13)
     mark.save(OUT / "logo_sonybae.png")
     mark.resize((mark.width // 2, mark.height // 2), Image.LANCZOS).save(
         PREVIEW / "preview_logo_sonybae.png")
 
+    make_comic_strips()
+    make_car_logo_panel()
     make_panel_texture().save(OUT / "tex_panel.png")
 
     for p in sorted(OUT.iterdir()):

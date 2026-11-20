@@ -1,22 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:bottom="3dp" android:left="3dp" android:right="3dp" android:top="3dp">
+    <!-- Border komik tebal di luar panel -->
+    <item android:bottom="4dp" android:left="4dp" android:right="4dp" android:top="4dp">
         <shape android:shape="rectangle">
-            <solid android:color="#E8171715" />
-            <corners android:radius="10dp" />
-            <stroke android:width="2dp" android:color="#FFD3AA69" />
+            <solid android:color="#FF130D08" />
+            <corners android:radius="12dp" />
+            <stroke android:width="3dp" android:color="#FFD3AA69" />
         </shape>
     </item>
+    <!-- Latar dalam panel -->
     <item
-        android:bottom="5dp"
-        android:left="5dp"
-        android:right="5dp"
-        android:top="5dp"
+        android:bottom="6dp"
+        android:left="6dp"
+        android:right="6dp"
+        android:top="6dp"
         android:drawable="@drawable/tex_panel" />
-    <item android:bottom="5dp" android:left="5dp" android:right="5dp" android:top="5dp">
+    <item android:bottom="6dp" android:left="6dp" android:right="6dp" android:top="6dp">
         <shape android:shape="rectangle">
-            <solid android:color="#80120F0C" />
-            <corners android:radius="7dp" />
+            <solid android:color="#88120F0C" />
+            <corners android:radius="9dp" />
         </shape>
     </item>
 </layer-list>
