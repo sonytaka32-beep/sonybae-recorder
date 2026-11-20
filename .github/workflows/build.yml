@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
     # Update ke v4
     - uses: actions/checkout@v4 
@@ -25,10 +27,24 @@ jobs:
       
     - name: Build with Gradle
       run: ./gradlew assembleDebug
-      
-    # Update utama ke v4 untuk mengatasi error
+
     - name: Upload APK
-      uses: actions/upload-artifact@v4 
+      uses: actions/upload-artifact@v4
       with:
         name: SONYBAE-Recorder-App
         path: app/build/outputs/apk/debug/app-debug.apk
+
+    # APK bisa diunduh tanpa login lewat URL release "latest":
+    # https://github.com/sonytaka32-beep/sonybae-recorder/releases/latest/download/SONYBAE-Recorder-debug.apk
+    - name: Publish APK to GitHub Release
+      if: github.ref == 'refs/heads/main'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -e
+        TAG="build-${GITHUB_RUN_NUMBER}"
+        gh release create "$TAG" \
+          "app/build/outputs/apk/debug/app-debug.apk#SONYBAE-Recorder-debug.apk" \
+          --title "SONYBAE Recorder build ${GITHUB_RUN_NUMBER}" \
+          --notes "APK debug dari commit ${GITHUB_SHA::7}" \
+          --latest
